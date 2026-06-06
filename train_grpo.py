@@ -150,6 +150,38 @@ def score_format(completion: str) -> float:
     return FORMAT_REWARD if re.search(r"<answer>\s*-?[\d,]+\.?\d*%?\s*</answer>", completion) else 0.0
 
 
+def _scale_match(p: float, r: float, tol: float = 0.001) -> bool:
+    """Check numerical equality at the same scale or with a ×100 correction.
+
+    FinQA annotations are inconsistent — some percentage answers are stored
+    as raw decimals (0.1822) while others are stored as whole percentages
+    (18.22). Same-scale comparison uses decimal-place exact match so 18.21
+    does NOT match 18.22. Cross-scale comparison uses relative tolerance so
+    18.21 / 100 = 0.1821 DOES match ref 0.1822 (0.055% error < 0.1% tol).
+
+    Args:
+        p: Predicted float value.
+        r: Reference float value.
+        tol: Relative tolerance for cross-scale check (default 0.001 = 0.1%).
+
+    Returns:
+        True if values match at same scale (exact) or cross scale (within tol).
+    """
+    if r == 0:
+        return abs(p) < tol
+
+    ref_str = f"{r}"
+    ref_decimals = len(ref_str.split(".")[-1]) if "." in ref_str else 0
+    ref_decimals = min(ref_decimals, 4)
+    if round(p, ref_decimals) == round(r, ref_decimals):
+        return True
+    if abs(p / 100 - r) / abs(r) < tol:
+        return True
+    if abs(p * 100 - r) / abs(r) < tol:
+        return True
+    return False
+
+
 def score_accuracy(completion: str, reference: str) -> float:
     """Return ACCURACY_REWARD if the extracted answer matches the reference.
 
@@ -158,9 +190,9 @@ def score_accuracy(completion: str, reference: str) -> float:
     prose without the tag scores 0.0, not 0.8 — this prevents the model from
     gaming the reward by omitting the structured format.
 
-    Uses decimal-place-matched exact comparison (same as FinQA official eval)
-    so scores are directly comparable to published Fin-R1 results.
-    Percentage signs are stripped before comparison.
+    Uses _scale_match() to handle FinQA's percentage/decimal annotation
+    inconsistency so the model is not penalised for correctly computing 18.21%
+    when the reference happens to be stored as 0.1822.
 
     Args:
         completion: Raw model completion string.
@@ -176,11 +208,7 @@ def score_accuracy(completion: str, reference: str) -> float:
         return 0.0
     ref_str = str(reference).replace(",", "").replace("%", "").strip()
     try:
-        pred = float(pred_str)
-        ref = float(ref_str)
-        ref_decimals = len(ref_str.split(".")[-1]) if "." in ref_str else 0
-        ref_decimals = min(ref_decimals, 4)
-        return ACCURACY_REWARD if round(pred, ref_decimals) == round(ref, ref_decimals) else 0.0
+        return ACCURACY_REWARD if _scale_match(float(pred_str), float(ref_str)) else 0.0
     except ValueError:
         return ACCURACY_REWARD if pred_str.strip() == ref_str else 0.0
 

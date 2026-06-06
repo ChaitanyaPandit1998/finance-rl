@@ -249,21 +249,62 @@ def generate_batch(model, tokenizer, prompts: list[str], device,
 
 # ── Scoring ────────────────────────────────────────────────────────────────────
 
+def _scale_match(p: float, r: float, tol: float = 0.001) -> bool:
+    """Check numerical equality at the same scale or with a ×100 correction.
+
+    FinQA annotations are inconsistent — some percentage answers are stored
+    as raw decimals (0.1822) while others are stored as whole percentages
+    (18.22). A model that correctly computes 18.21% should not be penalised
+    for a ref stored as 0.1822.
+
+    Two-tier logic:
+    - Same scale: decimal-place-matched EXACT comparison (18.21 ≠ 18.22)
+    - Cross scale: relative tolerance of 0.1% applied ONLY when checking ×100
+      alignment, so 18.21/100 = 0.1821 vs ref 0.1822 passes (0.055% error)
+      while a genuinely wrong 18.5 vs 0.1822 fails (1.5% error)
+
+    Args:
+        p: Predicted float value.
+        r: Reference float value.
+        tol: Relative tolerance for cross-scale check (default 0.001 = 0.1%).
+
+    Returns:
+        True if values match at same scale (exact) or cross scale (within tol).
+    """
+    if r == 0:
+        return abs(p) < tol
+
+    # Same scale: exact after rounding to reference's decimal places
+    ref_str = f"{r}"
+    ref_decimals = len(ref_str.split(".")[-1]) if "." in ref_str else 0
+    ref_decimals = min(ref_decimals, 4)
+    if round(p, ref_decimals) == round(r, ref_decimals):
+        return True
+
+    # Cross scale: model gave %, ref stored as decimal (e.g. 18.21 vs 0.1822)
+    if abs(p / 100 - r) / abs(r) < tol:
+        return True
+
+    # Cross scale: model gave decimal, ref stored as % (e.g. 0.1822 vs 18.22)
+    if abs(p * 100 - r) / abs(r) < tol:
+        return True
+
+    return False
+
+
 def compute_exact_match(predictions: list[str], references: list[str]) -> list[bool]:
     """Check whether each prediction's extracted number matches the reference.
 
-    Aligned with the official FinQA evaluation and Fin-R1's methodology:
-    both values are rounded to the same number of decimal places as the
-    reference before comparing, making the check effectively exact rather
-    than tolerance-based. This is stricter than 1% relative tolerance and
-    produces scores directly comparable to published Fin-R1 results.
+    Uses _scale_match() to handle FinQA's percentage/decimal annotation
+    inconsistency. A model that computes 18.21% is considered correct when
+    the reference is stored as 0.1822 (the raw ratio × 1 rather than × 100).
 
     Args:
         predictions: Model-generated responses (thinking already stripped).
         references: Ground truth answer strings from the FinQA test split.
 
     Returns:
-        List of booleans, True if the rounded prediction equals the rounded reference.
+        List of booleans, True if the prediction matches the reference.
     """
     results = []
     for pred, ref in zip(predictions, references):
@@ -273,11 +314,7 @@ def compute_exact_match(predictions: list[str], references: list[str]) -> list[b
             results.append(False)
             continue
         try:
-            p, r = float(pred_str), float(ref_str)
-            # Match to the same decimal precision as the reference value
-            ref_decimals = len(ref_str.split(".")[-1]) if "." in ref_str else 0
-            ref_decimals = min(ref_decimals, 4)
-            results.append(round(p, ref_decimals) == round(r, ref_decimals))
+            results.append(_scale_match(float(pred_str), float(ref_str)))
         except ValueError:
             results.append(pred_str.strip() == ref_str)
     return results
