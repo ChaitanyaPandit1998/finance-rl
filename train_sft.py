@@ -30,6 +30,7 @@ load_dotenv()  # loads HF_TOKEN and HF_HOME from .env into os.environ before any
 
 import os
 HF_CACHE: str | None = os.getenv("HF_HOME")
+CHECKPOINT_DIR: str = os.getenv("CHECKPOINT_DIR", "checkpoints")
 
 try:
     import torch
@@ -151,7 +152,7 @@ def main():
     parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--max-seq-len", type=int, default=2048)
-    parser.add_argument("--output-dir", type=str, default="checkpoints/sft")
+    parser.add_argument("--output-dir", type=str, default=f"{CHECKPOINT_DIR}/sft")
     parser.add_argument("--max-steps", type=int, default=-1, help="Override epochs with fixed step count")
     parser.add_argument("--finqa-samples", type=int, default=-1,
                         help="FinQA examples to add to SFT (-1 = all ~6k, 0 = skip FinQA)")
@@ -210,7 +211,7 @@ def main():
         bf16=not args.use_qlora,
         fp16=False,
         logging_steps=10,
-        save_steps=200,
+        save_strategy="epoch",
         save_total_limit=2,
         max_seq_length=args.max_seq_len,
         dataset_text_field="text",

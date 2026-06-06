@@ -34,6 +34,7 @@ load_dotenv()  # loads HF_TOKEN and HF_HOME from .env into os.environ before any
 
 import os
 HF_CACHE: str | None = os.getenv("HF_HOME")
+CHECKPOINT_DIR: str = os.getenv("CHECKPOINT_DIR", "checkpoints")
 
 try:
     import torch
@@ -264,7 +265,7 @@ def main():
     parser.add_argument("--max-steps", type=int, default=-1)
     parser.add_argument("--max-train-samples", type=int, default=-1,
                         help="Cap dataset size (-1 = use all examples)")
-    parser.add_argument("--output-dir", type=str, default="checkpoints/grpo")
+    parser.add_argument("--output-dir", type=str, default=f"{CHECKPOINT_DIR}/grpo")
     args = parser.parse_args()
 
     if args.num_generations < 2:
@@ -366,7 +367,7 @@ def main():
         max_prompt_length=args.max_prompt_len,
         max_completion_length=args.max_completion_len,
         logging_steps=10,
-        save_steps=200,
+        save_strategy="epoch",
         save_total_limit=2,
         report_to="none",
         seed=42,
