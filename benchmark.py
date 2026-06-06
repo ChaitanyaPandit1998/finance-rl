@@ -74,13 +74,22 @@ def strip_thinking(text: str) -> str:
     response length and contaminates ROUGE/BERTScore with reasoning chains
     that have nothing to do with the final answer.
 
+    Handles two cases:
+    - Complete blocks: <think>...</think> — both tags present, strip contents
+    - Truncated blocks: <think>... with no closing tag — max_new_tokens cut the
+      generation mid-thought; strip everything from <think> to end of string
+
     Args:
         text: Raw decoded model output.
 
     Returns:
-        Text with all <think>...</think> sections removed and whitespace stripped.
+        Text with all thinking content removed and whitespace stripped.
     """
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    # Complete blocks first
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    # Truncated blocks — <think> opened but </think> never arrived
+    text = re.sub(r"<think>.*", "", text, flags=re.DOTALL)
+    return text.strip()
 
 
 def extract_final_answer(text: str) -> str | None:
@@ -155,6 +164,7 @@ def format_finqa_prompt(example: dict, tokenizer) -> str:
 
     context = "\n\n".join(part for part in [pre, table_str, post] if part.strip())
     user_content = (
+        f"/no_think\n"
         f"Financial Context:\n{context}\n\n"
         f"Question: {example['question']}\n\n"
         f"Provide step-by-step reasoning and end with '#### <number>'."
