@@ -1,0 +1,37 @@
+[project]
+name = "rl"
+version = "0.1.0"
+description = "Qwen3-8B finance fine-tuning and benchmarking pipeline"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "datasets>=3.0.0",
+    "transformers>=4.45.0",
+    "accelerate>=0.34.0",
+    "peft>=0.13.0",
+    "trl>=0.12.0",
+    "rouge-score>=0.1.2",
+    "bert-score>=0.3.13",
+    "numpy>=1.26.0",
+    "requests>=2.34.2",
+]
+
+# ─── GPU / CUDA dependencies ──────────────────────────────────────────────────
+# Install these manually on your cloud GPU instance before running:
+#
+#   # 1. PyTorch with CUDA (match your CUDA version — check with: nvcc --version)
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#
+#   # 2. Unsloth (detects CUDA version automatically)
+#   pip install unsloth
+#
+#   # 3. bitsandbytes (required for QLoRA / --use-qlora flag)
+#   pip install bitsandbytes
+#
+#   # 4. Then install this project
+#   pip install -e .
+# ──────────────────────────────────────────────────────────────────────────────
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

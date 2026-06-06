@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""
+SFT fine-tuning of Qwen3-8B on Finance Alpaca + FinQA using Unsloth + LoRA.
+
+Both datasets are combined before training so the model learns:
+  - Finance Alpaca (~68k): broad financial instruction-following and terminology
+  - FinQA (~6k):          numerical reasoning over financial tables/documents
+
+The FinQA examples establish the '#### <answer>' output format that the
+dual reward in train_grpo.py later reinforces.
+
+Usage:
+    python train_sft.py
+
+    # Skip FinQA supplementation (Finance Alpaca only)
+    python train_sft.py --finqa-samples 0
+
+    # QLoRA fallback for GPUs with < 24GB VRAM
+    python train_sft.py --use-qlora
+
+    # Custom hyperparameters
+    python train_sft.py --rank 32 --epochs 2 --batch-size 4
+"""
+import argparse
+import sys
+from pathlib import Path
+
+try:
+    import torch
+    from datasets import Dataset, concatenate_datasets, load_dataset
+    from trl import SFTConfig, SFTTrainer
+except ImportError as e:
+    if "--help" not in sys.argv and "-h" not in sys.argv:
+        raise
+
+BASE_MODEL = "Qwen/Qwen3-8B"
+SYSTEM_PROMPT = "You are a helpful financial assistant. Answer concisely and accurately."
+
+
+def format_alpaca_example(example: dict, tokenizer) -> str:
+    """Format a single Finance Alpaca example into a full training string.
+
+    Applies Qwen3's native chat template to produce a string containing the
+    system prompt, user message, and expected assistant response. The tokenizer's
+    apply_chat_template handles all special tokens (<|im_start|>, <|im_end|>)
+    so the model trains on the same format it was pre-trained on.
+
+    Args:
+        example: Dict with keys 'instruction', 'input' (optional), 'output'.
+        tokenizer: Qwen3 tokenizer used to apply the chat template.
+
+    Returns:
+        Single string representing the full conversation, ready for tokenization.
+    """
+    user_content = example["instruction"]
+    if example.get("input", "").strip():
+        user_content += f"\n\n{example['input']}"
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+        {"role": "assistant", "content": example["output"]},
+    ]
+    return tokenizer.apply_chat_template(messages, tokenize=False)
+
+
+def format_finqa_example(example: dict, tokenizer) -> str:
+    """Format a single FinQA example into a full training string.
+
+    FinQA examples contain a financial table plus surrounding text extracted
+    from real SEC filings, paired with a numerical question and answer.
+    The table is formatted as pipe-separated rows so the model can parse
+    column relationships. The answer is wrapped in '#### <answer>' to
+    establish the extraction format that the GRPO dual reward later targets.
+
+    Args:
+        example: FinQA dataset row with 'pre_text', 'table', 'post_text',
+                 'question', and 'answer' keys.
+        tokenizer: Qwen3 tokenizer used to apply the chat template.
+
+    Returns:
+        Single string representing the full conversation, ready for tokenization.
+    """
+    pre = " ".join(example.get("pre_text") or [])
+    post = " ".join(example.get("post_text") or [])
+
+    table = example.get("table") or []
+    if isinstance(table, list) and table:
+        table_str = "\n".join(" | ".join(str(cell) for cell in row) for row in table)
+    else:
+        table_str = str(table) if table else ""
+
+    context = "\n\n".join(part for part in [pre, table_str, post] if part.strip())
+    user_content = f"Financial Context:\n{context}\n\nQuestion: {example['question']}"
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+        {"role": "assistant", "content": f"#### {example['answer']}"},
+    ]
+    return tokenizer.apply_chat_template(messages, tokenize=False)
+
+
+def build_combined_dataset(alpaca_raw, finqa_raw, tokenizer) -> Dataset:
+    """Pre-format and merge Finance Alpaca and FinQA into a single text dataset.
+
+    Both datasets are mapped to a common single-column schema ('text') so
+    SFTTrainer can consume them uniformly. Pre-formatting here rather than
+    using a batch formatting_func avoids schema mismatches between datasets
+    and makes the combined shuffle straightforward.
+
+    Args:
+        alpaca_raw: Raw Finance Alpaca HuggingFace dataset split.
+        finqa_raw: Raw FinQA HuggingFace dataset split, or None to skip.
+        tokenizer: Qwen3 tokenizer passed through to the formatting functions.
+
+    Returns:
+        Shuffled Dataset with a single 'text' column containing all examples.
+    """
+    print(f"  Formatting {len(alpaca_raw)} Finance Alpaca examples...")
+    alpaca_formatted = alpaca_raw.map(
+        lambda ex: {"text": format_alpaca_example(ex, tokenizer)},
+        remove_columns=alpaca_raw.column_names,
+    )
+
+    if finqa_raw is None:
+        return alpaca_formatted
+
+    print(f"  Formatting {len(finqa_raw)} FinQA examples...")
+    finqa_formatted = finqa_raw.map(
+        lambda ex: {"text": format_finqa_example(ex, tokenizer)},
+        remove_columns=finqa_raw.column_names,
+    )
+
+    combined = concatenate_datasets([alpaca_formatted, finqa_formatted])
+    return combined.shuffle(seed=42)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--use-qlora", action="store_true", help="4-bit QLoRA (for GPUs with < 24GB VRAM)")
+    parser.add_argument("--rank", type=int, default=16, help="LoRA rank")
+    parser.add_argument("--lora-alpha", type=int, default=16)
+    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--grad-accum", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--max-seq-len", type=int, default=2048)
+    parser.add_argument("--output-dir", type=str, default="checkpoints/sft")
+    parser.add_argument("--max-steps", type=int, default=-1, help="Override epochs with fixed step count")
+    parser.add_argument("--finqa-samples", type=int, default=-1,
+                        help="FinQA examples to add to SFT (-1 = all ~6k, 0 = skip FinQA)")
+    args = parser.parse_args()
+
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+
+    from unsloth import FastLanguageModel
+
+    print(f"Loading {BASE_MODEL} ({'4-bit QLoRA' if args.use_qlora else 'bfloat16 LoRA'})...")
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=BASE_MODEL,
+        max_seq_length=args.max_seq_len,
+        dtype=None if args.use_qlora else torch.bfloat16,
+        load_in_4bit=args.use_qlora,
+    )
+
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r=args.rank,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        lora_alpha=args.lora_alpha,
+        lora_dropout=0,
+        bias="none",
+        use_gradient_checkpointing="unsloth",
+        random_state=42,
+    )
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+
+    print("Loading datasets...")
+    alpaca_raw = load_dataset("gbharti/finance-alpaca", split="train")
+
+    finqa_raw = None
+    if args.finqa_samples != 0:
+        finqa_raw = load_dataset("ibm/finqa", split="train")
+        if args.finqa_samples > 0 and args.finqa_samples < len(finqa_raw):
+            finqa_raw = finqa_raw.select(range(args.finqa_samples))
+
+    dataset = build_combined_dataset(alpaca_raw, finqa_raw, tokenizer)
+    print(f"Combined dataset: {len(dataset)} examples "
+          f"({len(alpaca_raw)} Alpaca + {len(finqa_raw) if finqa_raw else 0} FinQA)")
+
+    training_args = SFTConfig(
+        output_dir=args.output_dir,
+        num_train_epochs=args.epochs,
+        max_steps=args.max_steps if args.max_steps > 0 else -1,
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        learning_rate=args.lr,
+        lr_scheduler_type="cosine",
+        warmup_ratio=0.05,
+        bf16=not args.use_qlora,
+        fp16=False,
+        logging_steps=10,
+        save_steps=200,
+        save_total_limit=2,
+        max_seq_length=args.max_seq_len,
+        dataset_text_field="text",
+        packing=True,
+        report_to="none",
+        seed=42,
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=dataset,
+        args=training_args,
+    )
+
+    print(f"\nStarting SFT training...")
+    print(f"  Rank: {args.rank} | Alpha: {args.lora_alpha} | LR: {args.lr}")
+    print(f"  Epochs: {args.epochs} | Batch: {args.batch_size} | Grad accum: {args.grad_accum}")
+    print(f"  Effective batch size: {args.batch_size * args.grad_accum}")
+
+    trainer.train()
+
+    print(f"\nSaving adapter to {args.output_dir}...")
+    model.save_pretrained(args.output_dir)
+    tokenizer.save_pretrained(args.output_dir)
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
