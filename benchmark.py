@@ -152,6 +152,7 @@ def generate_batch(model, tokenizer, prompts: list[str], device) -> list[str]:
         outputs = model.generate(
             **inputs,
             max_new_tokens=MAX_NEW_TOKENS,
+            max_length=None,       # clear Qwen3's baked-in default to silence the warning
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
         )
@@ -349,6 +350,8 @@ def main():
     parser.add_argument("--use-qlora", action="store_true")
     parser.add_argument("--no-bertscore", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--preview-every", type=int, default=50,
+                        help="Print a sample Q/A/prediction every N samples (0 = disable)")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -383,6 +386,19 @@ def main():
         done = min(i + args.batch_size, len(samples))
         elapsed = time.time() - t0
         print(f"  [{done}/{len(samples)}] {done/elapsed:.1f} samples/s")
+
+        # Print a sample response so you can visually sanity-check quality
+        if args.preview_every > 0 and done % args.preview_every == 0:
+            idx = len(preds) - 1        # last item in this batch
+            q   = instructions[idx]
+            ref = refs[idx]
+            ans = preds[idx]
+            print(f"\n  {'─'*60}")
+            print(f"  Sample [{done}/{len(samples)}]")
+            print(f"  Q:   {q[:120]}{'...' if len(q) > 120 else ''}")
+            print(f"  Ref: {ref[:200]}{'...' if len(ref) > 200 else ''}")
+            print(f"  Ans: {ans[:200]}{'...' if len(ans) > 200 else ''}")
+            print(f"  {'─'*60}\n")
 
     total_elapsed = time.time() - t0
 
