@@ -83,6 +83,16 @@ Accuracy credit is only awarded when the format marker is present — preventing
 ## Quick Start
 
 ```bash
+# Clone and enter the project
+git clone https://github.com/ChaitanyaPandit1998/finance-rl.git && cd finance-rl
+
+# Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Configure environment variables
+cp .env.example .env   # then fill in HF_TOKEN, HF_HOME, CHECKPOINT_DIR
+
 # Install dependencies (see RUNBOOK.md for full GPU setup)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 pip install unsloth bitsandbytes

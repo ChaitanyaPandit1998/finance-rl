@@ -32,26 +32,37 @@ Inspired by [Fin-R1](https://arxiv.org/abs/2503.16252) — same two-stage SFT �
 Run these once on your cloud GPU instance.
 
 ```bash
-# 1. Clone / upload the project
-git clone <your-repo> && cd rl
+# 1. Clone the project
+git clone https://github.com/ChaitanyaPandit1998/finance-rl.git && cd finance-rl
 
-# 2. PyTorch with CUDA (check your driver version: nvcc --version)
+# 2. Create and activate a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 3. Configure environment variables
+cp .env.example .env
+# Edit .env — fill in HF_TOKEN, and confirm HF_HOME / CHECKPOINT_DIR paths
+
+# 4. PyTorch with CUDA (match your driver — check with: nvcc --version)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
-# 3. Unsloth (efficient LoRA training)
+# 5. Unsloth (efficient LoRA training)
 pip install unsloth
 
-# 4. bitsandbytes (only needed for --use-qlora)
+# 6. bitsandbytes (only needed for --use-qlora)
 pip install bitsandbytes
 
-# 5. Project dependencies
+# 7. Project dependencies
 pip install -e .
 ```
 
-Verify GPU is visible:
+> **Tip:** On subsequent sessions, just run `source .venv/bin/activate` from the project root before running any script.
+
+Verify the environment:
 
 ```bash
 python3 -c "import torch; print(torch.cuda.get_device_name(0))"
+python3 benchmark.py --help
 ```
 
 ---
