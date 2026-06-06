@@ -477,10 +477,10 @@ def main():
     parser.add_argument("--num-samples", type=int, default=-1,
                         help="Number of examples to evaluate (-1 = full test split)")
     parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--max-new-tokens", type=int, default=1024,
+    parser.add_argument("--max-new-tokens", type=int, default=2048,
                         help="Max tokens the model can generate per example. "
-                             "FinQA needs ~800 tokens for reasoning + answer; "
-                             "512 often cuts off before '#### <number>' is reached.")
+                             "FinQA needs ~800-1500 tokens for reasoning + answer; "
+                             "lower values risk cutting off before '#### <number>'.")
     parser.add_argument("--use-qlora", action="store_true")
     parser.add_argument("--no-bertscore", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
