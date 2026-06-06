@@ -60,7 +60,6 @@ except ImportError as e:
         raise
 
 BASE_MODEL = "Qwen/Qwen3-8B"
-MAX_NEW_TOKENS = 512
 SYSTEM_PROMPT = "You are a helpful financial assistant. Answer concisely and accurately."
 
 
@@ -209,7 +208,8 @@ def load_model(checkpoint: str | None, use_qlora: bool):
 
 
 def generate_batch(model, tokenizer, prompts: list[str], device,
-                   max_prompt_len: int = 1024) -> list[str]:
+                   max_prompt_len: int = 1024,
+                   max_new_tokens: int = 1024) -> list[str]:
     """Run greedy decoding on a batch and return clean responses.
 
     Strips prompt tokens and Qwen3 thinking blocks from outputs so only
@@ -236,7 +236,7 @@ def generate_batch(model, tokenizer, prompts: list[str], device,
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=MAX_NEW_TOKENS,
+            max_new_tokens=max_new_tokens,
             max_length=None,  # clear Qwen3's baked-in default (40960) to silence warning
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
@@ -477,6 +477,10 @@ def main():
     parser.add_argument("--num-samples", type=int, default=-1,
                         help="Number of examples to evaluate (-1 = full test split)")
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--max-new-tokens", type=int, default=1024,
+                        help="Max tokens the model can generate per example. "
+                             "FinQA needs ~800 tokens for reasoning + answer; "
+                             "512 often cuts off before '#### <number>' is reached.")
     parser.add_argument("--use-qlora", action="store_true")
     parser.add_argument("--no-bertscore", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
@@ -530,7 +534,8 @@ def main():
             prompts   = [format_alpaca_prompt(q, inp, tokenizer)
                          for q, inp in zip(questions, inputs_)]
 
-        preds = generate_batch(model, tokenizer, prompts, device, max_prompt_len)
+        preds = generate_batch(model, tokenizer, prompts, device,
+                               max_prompt_len, args.max_new_tokens)
         all_predictions.extend(preds)
         all_references.extend(refs)
         all_questions.extend(questions)
@@ -573,6 +578,7 @@ def main():
         "checkpoint":         args.checkpoint,
         "model":              BASE_MODEL,
         "num_samples":        len(samples),
+        "max_new_tokens":     args.max_new_tokens,
         "timestamp":          datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
         "elapsed_seconds":    round(total_elapsed, 1),
         "samples_per_second": round(len(samples) / total_elapsed, 2),
