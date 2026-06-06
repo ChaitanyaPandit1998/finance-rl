@@ -195,7 +195,7 @@ def main():
 
     finqa_raw = None
     if args.finqa_samples != 0:
-        finqa_raw = load_dataset("ibm/finqa", split="train", cache_dir=HF_CACHE)
+        finqa_raw = load_dataset("dreamerdeo/finqa", split="train", cache_dir=HF_CACHE)
         if args.finqa_samples > 0 and args.finqa_samples < len(finqa_raw):
             finqa_raw = finqa_raw.select(range(args.finqa_samples))
 

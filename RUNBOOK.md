@@ -10,7 +10,7 @@ Inspired by [Fin-R1](https://arxiv.org/abs/2503.16252) â€” same two-stage SFT â†
 | Dataset | Used in | License |
 |---|---|---|
 | [gbharti/finance-alpaca](https://huggingface.co/datasets/gbharti/finance-alpaca) | SFT + GRPO (fallback) | MIT |
-| [ibm/finqa](https://huggingface.co/datasets/ibm/finqa) | SFT + GRPO (default) | MIT |
+| [dreamerdeo/finqa](https://huggingface.co/datasets/dreamerdeo/finqa) | SFT + GRPO (default) | MIT |
 | [cais/mmlu](https://huggingface.co/datasets/cais/mmlu) | Benchmark (optional) | MIT |
 | [BeIR/fiqa](https://huggingface.co/datasets/BeIR/fiqa) | Benchmark (optional) | CC-BY-SA-4.0 |
 

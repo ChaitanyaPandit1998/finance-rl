@@ -27,7 +27,7 @@ Compare all three results
 | Dataset | Role | License |
 |---|---|---|
 | [gbharti/finance-alpaca](https://huggingface.co/datasets/gbharti/finance-alpaca) | SFT training | MIT |
-| [ibm/finqa](https://huggingface.co/datasets/ibm/finqa) | SFT + GRPO training | MIT |
+| [dreamerdeo/finqa](https://huggingface.co/datasets/dreamerdeo/finqa) | SFT + GRPO training | MIT |
 | [cais/mmlu](https://huggingface.co/datasets/cais/mmlu) | Optional benchmark | MIT |
 | [BeIR/fiqa](https://huggingface.co/datasets/BeIR/fiqa) | Optional benchmark | CC-BY-SA-4.0 |
 

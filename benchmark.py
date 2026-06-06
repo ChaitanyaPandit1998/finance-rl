@@ -480,7 +480,7 @@ def main():
     # --- Load dataset ---
     if args.dataset == "finqa":
         print("Loading FinQA test split (held-out, no contamination)...")
-        raw = load_dataset("ibm/finqa", split="test", cache_dir=HF_CACHE)
+        raw = load_dataset("dreamerdeo/finqa", split="test", cache_dir=HF_CACHE)
         max_prompt_len = 2048  # FinQA prompts include table context
     else:
         print("Loading Finance Alpaca (warning: contaminated after SFT)...")
