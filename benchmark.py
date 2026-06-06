@@ -38,7 +38,11 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-load_dotenv()  # loads HF_TOKEN from .env into os.environ
+load_dotenv()  # loads HF_TOKEN and HF_HOME from .env into os.environ before any HF imports
+
+# If HF_HOME is set, pass it as cache_dir to every download call so models and
+# datasets land in /workspace and survive container restarts on cloud instances.
+HF_CACHE: str | None = os.getenv("HF_HOME")
 
 try:
     import torch
@@ -103,6 +107,7 @@ def load_model(checkpoint: str | None, use_qlora: bool):
         max_seq_length=2048,
         dtype=None if use_qlora else torch.bfloat16,
         load_in_4bit=use_qlora,
+        cache_dir=HF_CACHE,
     )
     if checkpoint:
         print(f"Loading adapter from {checkpoint}...")
@@ -346,7 +351,7 @@ def main():
     Path("results").mkdir(exist_ok=True)
 
     print("Loading finance-alpaca...")
-    dataset = load_dataset("gbharti/finance-alpaca", split="train")
+    dataset = load_dataset("gbharti/finance-alpaca", split="train", cache_dir=HF_CACHE)
     indices = random.sample(range(len(dataset)), min(args.num_samples, len(dataset)))
     samples = dataset.select(indices)
     print(f"Sampled {len(samples)} examples from {len(dataset)} total")

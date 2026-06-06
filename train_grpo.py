@@ -30,7 +30,10 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-load_dotenv()  # loads HF_TOKEN from .env into os.environ
+load_dotenv()  # loads HF_TOKEN and HF_HOME from .env into os.environ before any HF imports
+
+import os
+HF_CACHE: str | None = os.getenv("HF_HOME")
 
 try:
     import torch
@@ -279,6 +282,7 @@ def main():
         max_seq_length=args.max_prompt_len + args.max_completion_len,
         dtype=None if args.use_qlora else torch.bfloat16,
         load_in_4bit=args.use_qlora,
+        cache_dir=HF_CACHE,
     )
 
     # Only apply PEFT when starting from base model; SFT checkpoint already has LoRA
@@ -300,7 +304,7 @@ def main():
 
     print(f"Loading {args.dataset} dataset...")
     if args.dataset == "finqa":
-        raw = load_dataset("ibm/finqa", split="train")
+        raw = load_dataset("ibm/finqa", split="train", cache_dir=HF_CACHE)
         reward_fn = build_dual_reward_fn()
 
         def prepare(example):
@@ -322,7 +326,7 @@ def main():
             }
 
     else:
-        raw = load_dataset("gbharti/finance-alpaca", split="train")
+        raw = load_dataset("gbharti/finance-alpaca", split="train", cache_dir=HF_CACHE)
         reward_fn = build_rouge_reward_fn()
 
         def prepare(example):

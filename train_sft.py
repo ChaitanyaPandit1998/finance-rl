@@ -26,7 +26,10 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-load_dotenv()  # loads HF_TOKEN from .env into os.environ
+load_dotenv()  # loads HF_TOKEN and HF_HOME from .env into os.environ before any HF imports
+
+import os
+HF_CACHE: str | None = os.getenv("HF_HOME")
 
 try:
     import torch
@@ -164,6 +167,7 @@ def main():
         max_seq_length=args.max_seq_len,
         dtype=None if args.use_qlora else torch.bfloat16,
         load_in_4bit=args.use_qlora,
+        cache_dir=HF_CACHE,
     )
 
     model = FastLanguageModel.get_peft_model(
@@ -182,11 +186,11 @@ def main():
     tokenizer.padding_side = "right"
 
     print("Loading datasets...")
-    alpaca_raw = load_dataset("gbharti/finance-alpaca", split="train")
+    alpaca_raw = load_dataset("gbharti/finance-alpaca", split="train", cache_dir=HF_CACHE)
 
     finqa_raw = None
     if args.finqa_samples != 0:
-        finqa_raw = load_dataset("ibm/finqa", split="train")
+        finqa_raw = load_dataset("ibm/finqa", split="train", cache_dir=HF_CACHE)
         if args.finqa_samples > 0 and args.finqa_samples < len(finqa_raw):
             finqa_raw = finqa_raw.select(range(args.finqa_samples))
 
