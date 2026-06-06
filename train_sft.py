@@ -25,6 +25,9 @@ import argparse
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()  # loads HF_TOKEN from .env into os.environ
+
 try:
     import torch
     from datasets import Dataset, concatenate_datasets, load_dataset

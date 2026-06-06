@@ -30,11 +30,15 @@ Usage:
 """
 import argparse
 import json
+import os
 import random
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+from dotenv import load_dotenv
+load_dotenv()  # loads HF_TOKEN from .env into os.environ
 
 try:
     import torch
