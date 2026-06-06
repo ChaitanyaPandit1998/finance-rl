@@ -31,6 +31,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import random
 import sys
 import time
@@ -59,6 +60,24 @@ except ImportError as e:
 BASE_MODEL = "Qwen/Qwen3-8B"
 MAX_NEW_TOKENS = 512
 SYSTEM_PROMPT = "You are a helpful financial assistant. Answer concisely and accurately."
+
+
+def strip_thinking(text: str) -> str:
+    """Remove Qwen3 chain-of-thought blocks from generated output.
+
+    Qwen3's <think>...</think> tokens are not registered as special tokens in
+    the tokenizer, so skip_special_tokens=True does not remove them. Leaving
+    them in inflates response length and contaminates ROUGE/BERTScore with
+    internal reasoning that has nothing to do with the final answer.
+
+    Args:
+        text: Raw decoded model output, possibly containing <think> blocks.
+
+    Returns:
+        Text with all <think>...</think> sections removed and leading/trailing
+        whitespace stripped.
+    """
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
 def format_prompt(instruction: str, input_text: str, tokenizer) -> str:
@@ -157,7 +176,8 @@ def generate_batch(model, tokenizer, prompts: list[str], device) -> list[str]:
             pad_token_id=tokenizer.eos_token_id,
         )
     new_tokens = outputs[:, inputs["input_ids"].shape[1]:]
-    return tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
+    decoded = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
+    return [strip_thinking(t) for t in decoded]
 
 
 def compute_rouge(predictions: list[str], references: list[str]) -> dict[str, list[dict]]:
