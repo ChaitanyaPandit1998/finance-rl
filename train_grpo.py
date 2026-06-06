@@ -309,7 +309,8 @@ def main():
 
     print(f"Loading {args.dataset} dataset...")
     if args.dataset == "finqa":
-        raw = load_dataset("dreamerdeo/finqa", split="train", cache_dir=HF_CACHE)
+        from utils import load_finqa
+        raw = load_finqa(split="train", cache_dir=HF_CACHE)
         reward_fn = build_dual_reward_fn()
 
         def prepare(example):
