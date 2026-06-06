@@ -101,12 +101,16 @@ def format_finqa_example(example: dict, tokenizer) -> str:
         table_str = str(table) if table else ""
 
     context = "\n\n".join(part for part in [pre, table_str, post] if part.strip())
-    user_content = f"Financial Context:\n{context}\n\nQuestion: {example['question']}"
+    user_content = (
+        f"Financial Context:\n{context}\n\nQuestion: {example['question']}\n\n"
+        f"Provide step-by-step reasoning, then wrap your final numerical answer "
+        f"in <answer></answer> tags. Example: <answer>42.5</answer>"
+    )
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
-        {"role": "assistant", "content": f"#### {example['answer']}"},
+        {"role": "assistant", "content": f"<answer>{example['answer']}</answer>"},
     ]
     return tokenizer.apply_chat_template(messages, tokenize=False)
 

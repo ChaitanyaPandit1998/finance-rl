@@ -94,9 +94,9 @@ def strip_thinking(text: str) -> str:
 def extract_final_answer(text: str) -> str | None:
     """Extract a numerical answer from model output.
 
-    Looks for the '#### <number>' marker that SFT training establishes.
-    Falls back to the last number in the text for outputs that don't use
-    the structured format.
+    Looks for Fin-R1's <answer>X</answer> tag format first, then falls back
+    to the last number in the text for outputs that don't use the structured
+    format (e.g. baseline zero-shot responses).
 
     Args:
         text: Model completion with thinking stripped.
@@ -104,7 +104,7 @@ def extract_final_answer(text: str) -> str | None:
     Returns:
         Numeric string with commas and % stripped, or None if not found.
     """
-    match = re.search(r"####\s*(-?[\d,]+\.?\d*%?)", text)
+    match = re.search(r"<answer>\s*(-?[\d,]+\.?\d*%?)\s*</answer>", text)
     if match:
         return match.group(1).replace(",", "").replace("%", "")
     numbers = re.findall(r"-?[\d,]+\.?\d*", text)
@@ -166,7 +166,8 @@ def format_finqa_prompt(example: dict, tokenizer) -> str:
         f"/no_think\n"
         f"Financial Context:\n{context}\n\n"
         f"Question: {example['question']}\n\n"
-        f"Provide step-by-step reasoning and end with '#### <number>'."
+        f"Provide step-by-step reasoning, then wrap your final numerical answer "
+        f"in <answer></answer> tags. Example: <answer>42.5</answer>"
     )
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -251,17 +252,18 @@ def generate_batch(model, tokenizer, prompts: list[str], device,
 def compute_exact_match(predictions: list[str], references: list[str]) -> list[bool]:
     """Check whether each prediction's extracted number matches the reference.
 
-    Uses 1% relative tolerance so minor floating-point differences don't
-    count as wrong. Percentage signs are stripped before comparison since
-    some FinQA answers are expressed as '14.2%' while others are plain '14.2'.
-    This is the primary metric for FinQA — unambiguous and contamination-free.
+    Aligned with the official FinQA evaluation and Fin-R1's methodology:
+    both values are rounded to the same number of decimal places as the
+    reference before comparing, making the check effectively exact rather
+    than tolerance-based. This is stricter than 1% relative tolerance and
+    produces scores directly comparable to published Fin-R1 results.
 
     Args:
         predictions: Model-generated responses (thinking already stripped).
         references: Ground truth answer strings from the FinQA test split.
 
     Returns:
-        List of booleans, True if the extracted answer is within 1% of reference.
+        List of booleans, True if the rounded prediction equals the rounded reference.
     """
     results = []
     for pred, ref in zip(predictions, references):
@@ -272,10 +274,10 @@ def compute_exact_match(predictions: list[str], references: list[str]) -> list[b
             continue
         try:
             p, r = float(pred_str), float(ref_str)
-            if r == 0.0:
-                results.append(abs(p) < 1e-6)
-            else:
-                results.append(abs(p - r) / abs(r) < 0.01)
+            # Match to the same decimal precision as the reference value
+            ref_decimals = len(ref_str.split(".")[-1]) if "." in ref_str else 0
+            ref_decimals = min(ref_decimals, 4)
+            results.append(round(p, ref_decimals) == round(r, ref_decimals))
         except ValueError:
             results.append(pred_str.strip() == ref_str)
     return results

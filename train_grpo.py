@@ -102,7 +102,11 @@ def format_finqa_prompt(example: dict, tokenizer) -> str:
         table_str = str(table) if table else ""
 
     context = "\n\n".join(part for part in [pre, table_str, post] if part.strip())
-    user_content = f"Financial Context:\n{context}\n\nQuestion: {example['question']}"
+    user_content = (
+        f"Financial Context:\n{context}\n\nQuestion: {example['question']}\n\n"
+        f"Provide step-by-step reasoning, then wrap your final numerical answer "
+        f"in <answer></answer> tags. Example: <answer>42.5</answer>"
+    )
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -114,17 +118,17 @@ def format_finqa_prompt(example: dict, tokenizer) -> str:
 def extract_final_answer(text: str) -> str | None:
     """Extract the numerical answer from a completion.
 
-    Looks for the '#### <number>' marker established during SFT training.
-    Falls back to the last number in the text if the marker is absent,
-    so partially-formatted completions still receive partial credit.
+    Looks for Fin-R1's <answer>X</answer> tag format, matching how the
+    model is trained during SFT. Falls back to the last number in the text
+    so partially-formatted completions still receive some credit.
 
     Args:
         text: Raw model completion string.
 
     Returns:
-        Extracted number as a string (commas stripped), or None if not found.
+        Extracted number as a string (commas and % stripped), or None if not found.
     """
-    match = re.search(r"####\s*(-?[\d,]+\.?\d*%?)", text)
+    match = re.search(r"<answer>\s*(-?[\d,]+\.?\d*%?)\s*</answer>", text)
     if match:
         return match.group(1).replace(",", "").replace("%", "")
     numbers = re.findall(r"-?[\d,]+\.?\d*", text)
@@ -132,10 +136,10 @@ def extract_final_answer(text: str) -> str | None:
 
 
 def score_format(completion: str) -> float:
-    """Return FORMAT_REWARD if the completion contains a '#### <number>' marker, else 0.
+    """Return FORMAT_REWARD if the completion contains a valid <answer>X</answer> tag.
 
-    Rewards the model for producing a structured, extractable answer rather
-    than burying the result in free-form prose.
+    Rewards the model for producing a structured, extractable answer in
+    Fin-R1's format rather than burying the result in free-form prose.
 
     Args:
         completion: Raw model completion string.
@@ -143,20 +147,20 @@ def score_format(completion: str) -> float:
     Returns:
         FORMAT_REWARD (0.2) or 0.0.
     """
-    return FORMAT_REWARD if re.search(r"####\s*-?[\d,]+\.?\d*%?", completion) else 0.0
+    return FORMAT_REWARD if re.search(r"<answer>\s*-?[\d,]+\.?\d*%?\s*</answer>", completion) else 0.0
 
 
 def score_accuracy(completion: str, reference: str) -> float:
-    """Return ACCURACY_REWARD if the extracted answer matches the reference within 1%.
+    """Return ACCURACY_REWARD if the extracted answer matches the reference.
 
-    Deliberately requires a '####' marker before checking the number. This
-    couples format and accuracy: a correct number buried in prose without the
-    marker scores 0.0, not 0.8. Without this coupling the model could learn to
-    produce the right number in unstructured text and skip the format entirely.
+    Deliberately requires an <answer> tag before checking the number, matching
+    Fin-R1's coupled format+accuracy reward design. A correct number buried in
+    prose without the tag scores 0.0, not 0.8 — this prevents the model from
+    gaming the reward by omitting the structured format.
 
-    Uses relative tolerance so both small and large numbers are treated fairly.
-    Percentage signs are stripped before comparison since some FinQA answers
-    are expressed as '14.2%' while others are plain '14.2'.
+    Uses decimal-place-matched exact comparison (same as FinQA official eval)
+    so scores are directly comparable to published Fin-R1 results.
+    Percentage signs are stripped before comparison.
 
     Args:
         completion: Raw model completion string.
@@ -165,7 +169,7 @@ def score_accuracy(completion: str, reference: str) -> float:
     Returns:
         ACCURACY_REWARD (0.8) if format marker present and answer correct, else 0.0.
     """
-    if not re.search(r"####", completion):
+    if not re.search(r"<answer>", completion):
         return 0.0
     pred_str = extract_final_answer(completion)
     if pred_str is None:
@@ -174,9 +178,9 @@ def score_accuracy(completion: str, reference: str) -> float:
     try:
         pred = float(pred_str)
         ref = float(ref_str)
-        if ref == 0.0:
-            return ACCURACY_REWARD if abs(pred) < 1e-6 else 0.0
-        return ACCURACY_REWARD if abs(pred - ref) / abs(ref) < 0.01 else 0.0
+        ref_decimals = len(ref_str.split(".")[-1]) if "." in ref_str else 0
+        ref_decimals = min(ref_decimals, 4)
+        return ACCURACY_REWARD if round(pred, ref_decimals) == round(ref, ref_decimals) else 0.0
     except ValueError:
         return ACCURACY_REWARD if pred_str.strip() == ref_str else 0.0
 
