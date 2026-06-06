@@ -29,8 +29,12 @@ import re
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-load_dotenv()  # loads HF_TOKEN and HF_HOME from .env into os.environ before any HF imports
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # loads HF_TOKEN and HF_HOME from .env into os.environ before any HF imports
+except ImportError:
+    print("Warning: python-dotenv not installed. Set HF_TOKEN, HF_HOME, "
+          "CHECKPOINT_DIR manually in your shell if needed.")
 
 import os
 HF_CACHE: str | None = os.getenv("HF_HOME")

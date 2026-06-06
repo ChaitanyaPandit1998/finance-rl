@@ -37,8 +37,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
-load_dotenv()  # loads HF_TOKEN and HF_HOME from .env into os.environ before any HF imports
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # loads HF_TOKEN and HF_HOME from .env into os.environ before any HF imports
+except ImportError:
+    print("Warning: python-dotenv not installed. Set HF_TOKEN, HF_HOME, "
+          "CHECKPOINT_DIR manually in your shell if needed.")
 
 # If HF_HOME is set, pass it as cache_dir to every download call so models and
 # datasets land in /workspace and survive container restarts on cloud instances.

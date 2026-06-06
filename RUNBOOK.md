@@ -43,17 +43,20 @@ source .venv/bin/activate
 cp .env.example .env
 # Edit .env — fill in HF_TOKEN, and confirm HF_HOME / CHECKPOINT_DIR paths
 
-# 4. PyTorch with CUDA (match your driver — check with: nvcc --version)
+# 4. Install python-dotenv first so scripts can load .env immediately
+pip install python-dotenv
+
+# 5. PyTorch with CUDA (match your driver — check with: nvcc --version)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
-# 5. Unsloth (efficient LoRA training)
+# 6. Unsloth (efficient LoRA training)
 pip install unsloth
 
-# 6. bitsandbytes (only needed for --use-qlora)
+# 7. bitsandbytes (only needed for --use-qlora)
 pip install bitsandbytes
 
-# 7. Project dependencies
-pip install -e .
+# 8. Remaining project dependencies
+pip install -r requirements.txt
 ```
 
 > **Tip:** On subsequent sessions, just run `source .venv/bin/activate` from the project root before running any script.
