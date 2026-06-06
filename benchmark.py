@@ -467,6 +467,15 @@ def write_markdown_report(summary: dict, out_path: str) -> None:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+def _is_numeric(s: str) -> bool:
+    """Return True if s can be parsed as a float."""
+    try:
+        float(s)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", choices=["finqa", "alpaca"], default="finqa",
@@ -545,12 +554,23 @@ def main():
         print(f"  [{done}/{len(samples)}] {done/elapsed:.1f} samples/s")
 
         if args.preview_every > 0 and done % args.preview_every == 0:
-            idx = len(preds) - 1
+            idx       = len(preds) - 1
+            full_ans  = preds[idx]
+            extracted = extract_final_answer(full_ans)
+            q         = all_questions[-1]
             print(f"\n  {'─'*60}")
             print(f"  Sample [{done}/{len(samples)}]")
-            print(f"  Q:   {all_questions[-1][:120]}{'...' if len(all_questions[-1]) > 120 else ''}")
-            print(f"  Ref: {refs[idx][:200]}{'...' if len(refs[idx]) > 200 else ''}")
-            print(f"  Ans: {preds[idx][:200]}{'...' if len(preds[idx]) > 200 else ''}")
+            print(f"  Q:         {q[:120]}{'...' if len(q) > 120 else ''}")
+            print(f"  Ref:       {refs[idx]}")
+            print(f"  Extracted: {extracted if extracted else '(none — no #### marker found)'}")
+            print(f"  Match:     {'✓' if extracted and abs(float(extracted) - float(str(refs[idx]).replace(',','').replace('%',''))) / max(abs(float(str(refs[idx]).replace(',','').replace('%',''))), 1e-6) < 0.01 else '✗'}" if extracted and _is_numeric(extracted) and _is_numeric(str(refs[idx]).replace(',','').replace('%','')) else f"  Match:     {'✓' if extracted == str(refs[idx]).strip() else '✗'}")
+            # Show start and tail of full answer so reasoning chain + #### are both visible
+            if len(full_ans) > 300:
+                print(f"  Ans start: {full_ans[:150]}...")
+                print(f"  Ans end:   ...{full_ans[-150:]}")
+            else:
+                print(f"  Ans:       {full_ans}")
+            print(f"  Tokens:    {len(full_ans.split())} words / ~{len(full_ans)//4} tokens generated")
             print(f"  {'─'*60}\n")
 
     total_elapsed = time.time() - t0
