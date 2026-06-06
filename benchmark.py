@@ -507,9 +507,12 @@ def main():
         batch = samples[i : i + args.batch_size]
 
         if args.dataset == "finqa":
-            questions = [ex["question"] for ex in batch]  # FinQA: list of dicts
-            refs      = [str(ex["answer"]) for ex in batch]
-            prompts   = [format_finqa_prompt(ex, tokenizer) for ex in batch]
+            # Dataset slice returns a dict-of-lists, not a list-of-dicts
+            questions = batch["question"]
+            refs      = [str(a) for a in batch["answer"]]
+            n         = len(questions)
+            examples  = [{k: batch[k][j] for k in batch} for j in range(n)]
+            prompts   = [format_finqa_prompt(ex, tokenizer) for ex in examples]
         else:
             questions = batch["instruction"]
             refs      = batch["output"]
