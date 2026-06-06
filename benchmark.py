@@ -1,28 +1,32 @@
 #!/usr/bin/env python3
 """
-Benchmark Qwen3-8B (baseline or LoRA checkpoint) on gbharti/finance-alpaca.
+Benchmark Qwen3-8B (baseline or LoRA checkpoint) on FinQA or Finance Alpaca.
 
-Metrics computed per run:
-  - ROUGE-1, ROUGE-2, ROUGE-L  (precision, recall, F1 for each)
-  - BERTScore                   (precision, recall, F1)
-  - Response length             (avg words in prediction vs reference)
-  - Throughput                  (samples/sec, total time)
+Default dataset is FinQA test split — a proper held-out evaluation set the
+model never sees during training. Finance Alpaca (--dataset alpaca) is available
+for comparison but suffers from train/test contamination after SFT.
 
-Two output files are written per run:
+Metrics:
+  FinQA (default):
+    - Exact match accuracy  PRIMARY — extracted number within 1% of reference
+    - ROUGE-1/2/L, BERTScore  secondary
+  Finance Alpaca:
+    - ROUGE-1/2/L, BERTScore  only (no verifiable ground truth)
+
+Two output files per run:
   results/benchmark_{tag}.json   full stats + per-sample records
   results/benchmark_{tag}.md     human-readable summary for GitHub
 
 Usage:
-    # Baseline (no fine-tuning)
+    # Proper FinQA benchmark (recommended)
     python benchmark.py --tag baseline
-
-    # After SFT
     python benchmark.py --checkpoint checkpoints/sft --tag sft
-
-    # After GRPO
     python benchmark.py --checkpoint checkpoints/grpo --tag grpo
 
-    # Skip BERTScore (faster, saves ~2 GB VRAM)
+    # Finance Alpaca (ROUGE/BERTScore only, contaminated after SFT)
+    python benchmark.py --dataset alpaca --tag baseline_alpaca
+
+    # Skip BERTScore (faster)
     python benchmark.py --tag baseline --no-bertscore
 
     # Budget GPU
@@ -40,13 +44,11 @@ from pathlib import Path
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()  # loads HF_TOKEN and HF_HOME from .env into os.environ before any HF imports
+    load_dotenv()  # loads HF_TOKEN and HF_HOME from .env before any HF imports
 except ImportError:
     print("Warning: python-dotenv not installed. Set HF_TOKEN, HF_HOME, "
           "CHECKPOINT_DIR manually in your shell if needed.")
 
-# If HF_HOME is set, pass it as cache_dir to every download call so models and
-# datasets land in /workspace and survive container restarts on cloud instances.
 HF_CACHE: str | None = os.getenv("HF_HOME")
 
 try:
@@ -62,40 +64,61 @@ MAX_NEW_TOKENS = 512
 SYSTEM_PROMPT = "You are a helpful financial assistant. Answer concisely and accurately."
 
 
-def strip_thinking(text: str) -> str:
-    """Remove Qwen3 chain-of-thought blocks from generated output.
+# ── Text utilities ─────────────────────────────────────────────────────────────
 
-    Qwen3's <think>...</think> tokens are not registered as special tokens in
-    the tokenizer, so skip_special_tokens=True does not remove them. Leaving
-    them in inflates response length and contaminates ROUGE/BERTScore with
-    internal reasoning that has nothing to do with the final answer.
+def strip_thinking(text: str) -> str:
+    """Remove Qwen3 <think>...</think> blocks from generated output.
+
+    Qwen3's thinking tokens are plain text, not special tokens, so
+    skip_special_tokens=True does not remove them. Leaving them in inflates
+    response length and contaminates ROUGE/BERTScore with reasoning chains
+    that have nothing to do with the final answer.
 
     Args:
-        text: Raw decoded model output, possibly containing <think> blocks.
+        text: Raw decoded model output.
 
     Returns:
-        Text with all <think>...</think> sections removed and leading/trailing
-        whitespace stripped.
+        Text with all <think>...</think> sections removed and whitespace stripped.
     """
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
-def format_prompt(instruction: str, input_text: str, tokenizer) -> str:
-    """Build a chat-formatted prompt string ready for tokenization.
+def extract_final_answer(text: str) -> str | None:
+    """Extract a numerical answer from model output.
 
-    Combines the instruction and optional input into a single user message,
-    applies Qwen3's chat template, and appends the generation prompt marker
-    so the model knows to start its response. The /no_think prefix suppresses
-    Qwen3's internal chain-of-thought reasoning, which speeds up inference
-    without affecting answer quality for straightforward Q&A.
+    Looks for the '#### <number>' marker that SFT training establishes.
+    Falls back to the last number in the text for outputs that don't use
+    the structured format.
 
     Args:
-        instruction: The finance question or task description.
-        input_text: Optional additional context (empty string if not provided).
-        tokenizer: Qwen3 tokenizer used to apply the chat template.
+        text: Model completion with thinking stripped.
 
     Returns:
-        Fully formatted prompt string including special tokens.
+        Numeric string with commas and % stripped, or None if not found.
+    """
+    match = re.search(r"####\s*(-?[\d,]+\.?\d*%?)", text)
+    if match:
+        return match.group(1).replace(",", "").replace("%", "")
+    numbers = re.findall(r"-?[\d,]+\.?\d*", text)
+    return numbers[-1].replace(",", "") if numbers else None
+
+
+# ── Prompt formatting ──────────────────────────────────────────────────────────
+
+def format_alpaca_prompt(instruction: str, input_text: str, tokenizer) -> str:
+    """Build a chat-formatted prompt for a Finance Alpaca example.
+
+    Injects /no_think to suppress Qwen3's chain-of-thought for faster
+    inference. Thinking is stripped from the output regardless, but suppressing
+    it here saves generation time.
+
+    Args:
+        instruction: The finance question or task.
+        input_text: Optional additional context (empty string if absent).
+        tokenizer: Qwen3 tokenizer.
+
+    Returns:
+        Fully formatted prompt string with generation marker appended.
     """
     user_content = instruction
     if input_text.strip():
@@ -107,18 +130,50 @@ def format_prompt(instruction: str, input_text: str, tokenizer) -> str:
     return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 
+def format_finqa_prompt(example: dict, tokenizer) -> str:
+    """Build a chat-formatted prompt for a FinQA example.
+
+    Includes the financial context (table + surrounding text from the SEC
+    filing) so the model has the source data needed to compute the answer.
+    The model must produce a '#### <number>' answer to receive full credit
+    from the exact-match scorer.
+
+    Args:
+        example: FinQA dataset row with pre_text, table, post_text, question.
+        tokenizer: Qwen3 tokenizer.
+
+    Returns:
+        Fully formatted prompt string with generation marker appended.
+    """
+    pre = " ".join(example.get("pre_text") or [])
+    post = " ".join(example.get("post_text") or [])
+    table = example.get("table") or []
+    if isinstance(table, list) and table:
+        table_str = "\n".join(" | ".join(str(cell) for cell in row) for row in table)
+    else:
+        table_str = str(table) if table else ""
+
+    context = "\n\n".join(part for part in [pre, table_str, post] if part.strip())
+    user_content = (
+        f"Financial Context:\n{context}\n\n"
+        f"Question: {example['question']}\n\n"
+        f"Provide step-by-step reasoning and end with '#### <number>'."
+    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+
+# ── Model loading & inference ──────────────────────────────────────────────────
+
 def load_model(checkpoint: str | None, use_qlora: bool):
     """Load Qwen3-8B via Unsloth and optionally apply a LoRA adapter.
 
-    Loads the base model in bfloat16 by default, or in 4-bit if use_qlora
-    is set. If a checkpoint path is provided, the saved LoRA adapter weights
-    are loaded on top of the base model. The model is then switched to
-    inference mode (disables dropout, fuses layers for speed).
-
     Args:
-        checkpoint: Path to a saved LoRA adapter directory, or None for
-            zero-shot baseline evaluation.
-        use_qlora: If True, load in 4-bit quantization (for GPUs < 24GB VRAM).
+        checkpoint: Path to a LoRA adapter directory, or None for zero-shot.
+        use_qlora: Load in 4-bit quantization (for GPUs < 24 GB VRAM).
 
     Returns:
         Tuple of (model, tokenizer) ready for inference.
@@ -143,35 +198,36 @@ def load_model(checkpoint: str | None, use_qlora: bool):
     return model, tokenizer
 
 
-def generate_batch(model, tokenizer, prompts: list[str], device) -> list[str]:
-    """Run greedy decoding on a batch of prompts and return the new tokens only.
+def generate_batch(model, tokenizer, prompts: list[str], device,
+                   max_prompt_len: int = 1024) -> list[str]:
+    """Run greedy decoding on a batch and return clean responses.
 
-    Pads the batch to a uniform length, runs a single forward + decode pass,
-    then strips the prompt tokens from the output so only the model's response
-    is returned. Uses greedy decoding (do_sample=False) for deterministic,
-    reproducible benchmark results.
+    Strips prompt tokens and Qwen3 thinking blocks from outputs so only
+    the final answer text is returned for scoring.
 
     Args:
-        model: The loaded Qwen3 model in inference mode.
+        model: Qwen3 model in inference mode.
         tokenizer: Corresponding tokenizer with left-side padding.
-        prompts: List of fully formatted prompt strings.
-        device: torch.device the model is on.
+        prompts: Fully formatted prompt strings.
+        device: Torch device the model is on.
+        max_prompt_len: Truncation limit for input tokens. FinQA prompts
+            include table context and need more room than Alpaca prompts.
 
     Returns:
-        List of decoded response strings, one per prompt.
+        List of clean response strings, one per prompt.
     """
     inputs = tokenizer(
         prompts,
         return_tensors="pt",
         padding=True,
         truncation=True,
-        max_length=1024,
+        max_length=max_prompt_len,
     ).to(device)
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
             max_new_tokens=MAX_NEW_TOKENS,
-            max_length=None,       # clear Qwen3's baked-in default to silence the warning
+            max_length=None,  # clear Qwen3's baked-in default (40960) to silence warning
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
         )
@@ -180,24 +236,55 @@ def generate_batch(model, tokenizer, prompts: list[str], device) -> list[str]:
     return [strip_thinking(t) for t in decoded]
 
 
+# ── Scoring ────────────────────────────────────────────────────────────────────
+
+def compute_exact_match(predictions: list[str], references: list[str]) -> list[bool]:
+    """Check whether each prediction's extracted number matches the reference.
+
+    Uses 1% relative tolerance so minor floating-point differences don't
+    count as wrong. Percentage signs are stripped before comparison since
+    some FinQA answers are expressed as '14.2%' while others are plain '14.2'.
+    This is the primary metric for FinQA — unambiguous and contamination-free.
+
+    Args:
+        predictions: Model-generated responses (thinking already stripped).
+        references: Ground truth answer strings from the FinQA test split.
+
+    Returns:
+        List of booleans, True if the extracted answer is within 1% of reference.
+    """
+    results = []
+    for pred, ref in zip(predictions, references):
+        pred_str = extract_final_answer(pred)
+        ref_str = str(ref).replace(",", "").replace("%", "").strip()
+        if pred_str is None:
+            results.append(False)
+            continue
+        try:
+            p, r = float(pred_str), float(ref_str)
+            if r == 0.0:
+                results.append(abs(p) < 1e-6)
+            else:
+                results.append(abs(p - r) / abs(r) < 0.01)
+        except ValueError:
+            results.append(pred_str.strip() == ref_str)
+    return results
+
+
 def compute_rouge(predictions: list[str], references: list[str]) -> dict[str, list[dict]]:
-    """Compute ROUGE-1, ROUGE-2, and ROUGE-L for each prediction/reference pair.
+    """Compute ROUGE-1, ROUGE-2, and ROUGE-L (precision, recall, F1) per pair.
 
-    Returns all three variants together in one pass so the scorer is only
-    instantiated once. Each variant includes precision, recall, and F1 so
-    callers can report whichever combination is most informative.
-
-    ROUGE-1: unigram overlap — broad vocabulary match
-    ROUGE-2: bigram overlap — captures phrasing similarity
-    ROUGE-L: longest common subsequence — captures sentence-level structure
+    All three variants are computed in one scorer pass for efficiency.
+    ROUGE-1: unigram overlap; ROUGE-2: bigram/phrase overlap;
+    ROUGE-L: longest common subsequence / sentence structure.
 
     Args:
         predictions: Model-generated responses.
-        references: Ground truth answers from the dataset.
+        references: Ground truth answers.
 
     Returns:
-        Dict with keys 'rouge1', 'rouge2', 'rougeL'. Each value is a list of
-        dicts with keys 'precision', 'recall', 'f1', one per prediction/reference pair.
+        Dict with keys 'rouge1', 'rouge2', 'rougeL', each a list of
+        {'precision', 'recall', 'f1'} dicts.
     """
     scorer = rs.RougeScorer(["rouge1", "rouge2", "rougeL"], use_stemmer=True)
     results = {"rouge1": [], "rouge2": [], "rougeL": []}
@@ -214,21 +301,18 @@ def compute_rouge(predictions: list[str], references: list[str]) -> dict[str, li
 
 
 def compute_bertscore(predictions: list[str], references: list[str]) -> dict[str, list[float]]:
-    """Compute BERTScore precision, recall, and F1 for each prediction/reference pair.
+    """Compute BERTScore precision, recall, and F1 per pair.
 
-    BERTScore embeds both texts with a pretrained BERT model and measures
-    cosine similarity between token embeddings, making it sensitive to
-    semantic meaning rather than surface word overlap. This catches cases
-    where the model uses different but correct phrasing that ROUGE would
-    penalise. All three components are returned so the caller can assess
-    whether the model is precise, comprehensive, or both.
+    BERTScore measures semantic similarity via BERT token embeddings rather
+    than surface word overlap, catching cases where correct but differently-
+    worded answers would be penalised by ROUGE.
 
     Args:
         predictions: Model-generated responses.
-        references: Ground truth answers from the dataset.
+        references: Ground truth answers.
 
     Returns:
-        Dict with keys 'precision', 'recall', 'f1', each a list of floats in [0, 1].
+        Dict with keys 'precision', 'recall', 'f1', each a list of floats.
     """
     from bert_score import score as bs_score
     P, R, F1 = bs_score(predictions, references, lang="en", verbose=False)
@@ -240,37 +324,31 @@ def compute_bertscore(predictions: list[str], references: list[str]) -> dict[str
 
 
 def response_length_stats(predictions: list[str], references: list[str]) -> dict:
-    """Compute average word counts for predictions and references.
+    """Compute avg/min/max word counts for predictions vs references.
 
-    A large gap between prediction and reference length indicates the model
-    is either truncating answers (prediction << reference) or being verbose
-    (prediction >> reference). Both are useful diagnostics alongside ROUGE scores.
+    A large gap flags truncated answers (pred << ref) or verbosity (pred >> ref).
 
     Args:
         predictions: Model-generated responses.
-        references: Ground truth answers from the dataset.
+        references: Ground truth answers.
 
     Returns:
-        Dict with avg/min/max word counts for both predictions and references.
+        Dict with word count stats for predictions and references.
     """
     pred_lens = [len(p.split()) for p in predictions]
     ref_lens  = [len(r.split()) for r in references]
     return {
-        "prediction_words": {
-            "mean": round(sum(pred_lens) / len(pred_lens), 1),
-            "min":  min(pred_lens),
-            "max":  max(pred_lens),
-        },
-        "reference_words": {
-            "mean": round(sum(ref_lens) / len(ref_lens), 1),
-            "min":  min(ref_lens),
-            "max":  max(ref_lens),
-        },
+        "prediction_words": {"mean": round(sum(pred_lens)/len(pred_lens), 1),
+                              "min": min(pred_lens), "max": max(pred_lens)},
+        "reference_words":  {"mean": round(sum(ref_lens)/len(ref_lens), 1),
+                              "min": min(ref_lens),  "max": max(ref_lens)},
     }
 
 
+# ── Aggregation helpers ────────────────────────────────────────────────────────
+
 def percentile(data: list[float], p: int) -> float:
-    """Return the p-th percentile of a list of floats, rounded to 4 decimal places."""
+    """Return the p-th percentile of a list, rounded to 4 decimal places."""
     data = sorted(data)
     idx = int(len(data) * p / 100)
     return round(data[min(idx, len(data) - 1)], 4)
@@ -286,41 +364,58 @@ def aggregate(scores: list[float]) -> dict:
     }
 
 
-def write_markdown_report(summary: dict, out_path: str) -> None:
-    """Write a human-readable markdown summary for GitHub display.
+# ── Reporting ──────────────────────────────────────────────────────────────────
 
-    Produces a clean table-based report that renders directly on GitHub,
-    making it easy to compare baseline / SFT / GRPO runs at a glance
-    without opening the raw JSON.
+def write_markdown_report(summary: dict, out_path: str) -> None:
+    """Write a GitHub-renderable markdown summary of the benchmark run.
+
+    For FinQA, exact match accuracy is shown at the top as the headline
+    metric. ROUGE and BERTScore follow as secondary context.
 
     Args:
         summary: The summary dict built in main().
-        out_path: File path to write the .md report to.
+        out_path: Path to write the .md file to.
     """
-    tag       = summary["tag"]
+    tag        = summary["tag"]
     checkpoint = summary.get("checkpoint") or "none (zero-shot baseline)"
-    n         = summary["num_samples"]
-    ts        = summary.get("timestamp", "")
-    elapsed   = summary.get("elapsed_seconds", 0)
-    sps       = summary.get("samples_per_second", 0)
+    dataset    = summary.get("dataset", "finqa")
+    n          = summary["num_samples"]
+    ts         = summary.get("timestamp", "")
+    elapsed    = summary.get("elapsed_seconds", 0)
+    sps        = summary.get("samples_per_second", 0)
 
     lines = [
         f"# Benchmark: `{tag}`",
         "",
-        f"| Field | Value |",
-        f"|---|---|",
+        "| Field | Value |",
+        "|---|---|",
         f"| Model | {BASE_MODEL} |",
+        f"| Dataset | {dataset} |",
         f"| Checkpoint | `{checkpoint}` |",
         f"| Samples evaluated | {n} |",
         f"| Run timestamp | {ts} |",
         f"| Total time | {elapsed:.0f}s ({sps:.1f} samples/s) |",
         "",
-        "## ROUGE Scores",
+    ]
+
+    if "exact_match" in summary:
+        em = summary["exact_match"]
+        lines += [
+            "## Exact Match Accuracy (Primary — FinQA)",
+            "",
+            "| Metric | Value |",
+            "|---|---|",
+            f"| Accuracy | **{em['accuracy']:.1%}** |",
+            f"| Correct | {em['correct']} / {em['total']} |",
+            "",
+        ]
+
+    lines += [
+        "## ROUGE Scores (Secondary)",
         "",
         "| Metric | Precision | Recall | F1 (mean) | F1 (p50) |",
         "|---|---|---|---|---|",
     ]
-
     for key, label in [("rouge1", "ROUGE-1"), ("rouge2", "ROUGE-2"), ("rougeL", "ROUGE-L")]:
         if key in summary:
             s = summary[key]
@@ -333,7 +428,7 @@ def write_markdown_report(summary: dict, out_path: str) -> None:
         bs = summary["bert_score"]
         lines += [
             "",
-            "## BERTScore",
+            "## BERTScore (Secondary)",
             "",
             "| Metric | Precision | Recall | F1 (mean) | F1 (p50) |",
             "|---|---|---|---|---|",
@@ -356,78 +451,103 @@ def write_markdown_report(summary: dict, out_path: str) -> None:
         ]
 
     lines += ["", "---", f"_Generated by benchmark.py — {ts}_", ""]
-
     with open(out_path, "w") as f:
         f.write("\n".join(lines))
 
 
+# ── Main ───────────────────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", choices=["finqa", "alpaca"], default="finqa",
+                        help="finqa = FinQA test split (proper held-out eval, recommended); "
+                             "alpaca = Finance Alpaca train sample (contaminated after SFT)")
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--tag", type=str, default="baseline")
-    parser.add_argument("--num-samples", type=int, default=500)
+    parser.add_argument("--num-samples", type=int, default=-1,
+                        help="Number of examples to evaluate (-1 = full test split)")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--use-qlora", action="store_true")
     parser.add_argument("--no-bertscore", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--preview-every", type=int, default=50,
-                        help="Print a sample Q/A/prediction every N samples (0 = disable)")
+                        help="Print a sample Q/answer every N samples (0 = disable)")
     args = parser.parse_args()
 
     random.seed(args.seed)
     Path("results").mkdir(exist_ok=True)
 
-    print("Loading finance-alpaca...")
-    dataset = load_dataset("gbharti/finance-alpaca", split="train", cache_dir=HF_CACHE)
-    indices = random.sample(range(len(dataset)), min(args.num_samples, len(dataset)))
-    samples = dataset.select(indices)
-    print(f"Sampled {len(samples)} examples from {len(dataset)} total")
+    # --- Load dataset ---
+    if args.dataset == "finqa":
+        print("Loading FinQA test split (held-out, no contamination)...")
+        raw = load_dataset("ibm/finqa", split="test", cache_dir=HF_CACHE)
+        max_prompt_len = 2048  # FinQA prompts include table context
+    else:
+        print("Loading Finance Alpaca (warning: contaminated after SFT)...")
+        raw = load_dataset("gbharti/finance-alpaca", split="train", cache_dir=HF_CACHE)
+        max_prompt_len = 1024
 
+    if args.num_samples > 0 and args.num_samples < len(raw):
+        indices = random.sample(range(len(raw)), args.num_samples)
+        samples = raw.select(indices)
+    else:
+        samples = raw
+    print(f"Evaluating on {len(samples)} examples")
+
+    # --- Load model ---
     print(f"Loading {BASE_MODEL}...")
     model, tokenizer = load_model(args.checkpoint, args.use_qlora)
     device = next(model.parameters()).device
 
-    all_predictions, all_references, all_instructions = [], [], []
+    all_predictions, all_references, all_questions = [], [], []
     t0 = time.time()
 
     for i in range(0, len(samples), args.batch_size):
         batch = samples[i : i + args.batch_size]
-        instructions = batch["instruction"]
-        inputs = batch.get("input") or [""] * len(instructions)
-        refs = batch["output"]
 
-        prompts = [format_prompt(instr, inp, tokenizer) for instr, inp in zip(instructions, inputs)]
-        preds = generate_batch(model, tokenizer, prompts, device)
+        if args.dataset == "finqa":
+            questions = [ex["question"] for ex in batch]  # FinQA: list of dicts
+            refs      = [str(ex["answer"]) for ex in batch]
+            prompts   = [format_finqa_prompt(ex, tokenizer) for ex in batch]
+        else:
+            questions = batch["instruction"]
+            refs      = batch["output"]
+            inputs_   = batch.get("input") or [""] * len(questions)
+            prompts   = [format_alpaca_prompt(q, inp, tokenizer)
+                         for q, inp in zip(questions, inputs_)]
 
+        preds = generate_batch(model, tokenizer, prompts, device, max_prompt_len)
         all_predictions.extend(preds)
         all_references.extend(refs)
-        all_instructions.extend(instructions)
+        all_questions.extend(questions)
 
-        done = min(i + args.batch_size, len(samples))
+        done    = min(i + args.batch_size, len(samples))
         elapsed = time.time() - t0
         print(f"  [{done}/{len(samples)}] {done/elapsed:.1f} samples/s")
 
-        # Print a sample response so you can visually sanity-check quality
         if args.preview_every > 0 and done % args.preview_every == 0:
-            idx = len(preds) - 1        # last item in this batch
-            q   = instructions[idx]
-            ref = refs[idx]
-            ans = preds[idx]
+            idx = len(preds) - 1
             print(f"\n  {'─'*60}")
             print(f"  Sample [{done}/{len(samples)}]")
-            print(f"  Q:   {q[:120]}{'...' if len(q) > 120 else ''}")
-            print(f"  Ref: {ref[:200]}{'...' if len(ref) > 200 else ''}")
-            print(f"  Ans: {ans[:200]}{'...' if len(ans) > 200 else ''}")
+            print(f"  Q:   {all_questions[-1][:120]}{'...' if len(all_questions[-1]) > 120 else ''}")
+            print(f"  Ref: {refs[idx][:200]}{'...' if len(refs[idx]) > 200 else ''}")
+            print(f"  Ans: {preds[idx][:200]}{'...' if len(preds[idx]) > 200 else ''}")
             print(f"  {'─'*60}\n")
 
     total_elapsed = time.time() - t0
 
+    # --- Score ---
     print("\nScoring ROUGE-1 / ROUGE-2 / ROUGE-L...")
     rouge = compute_rouge(all_predictions, all_references)
 
+    exact_matches = None
+    if args.dataset == "finqa":
+        print("Scoring exact match accuracy...")
+        exact_matches = compute_exact_match(all_predictions, all_references)
+
     bert = None
     if not args.no_bertscore:
-        print("Scoring BERTScore precision / recall / F1 (this may take a moment)...")
+        print("Scoring BERTScore (this may take a moment)...")
         bert = compute_bertscore(all_predictions, all_references)
 
     length_stats = response_length_stats(all_predictions, all_references)
@@ -435,6 +555,7 @@ def main():
     # --- Build summary ---
     summary = {
         "tag":                args.tag,
+        "dataset":            args.dataset,
         "checkpoint":         args.checkpoint,
         "model":              BASE_MODEL,
         "num_samples":        len(samples),
@@ -459,6 +580,14 @@ def main():
         "response_length": length_stats,
     }
 
+    if exact_matches is not None:
+        correct = sum(exact_matches)
+        summary["exact_match"] = {
+            "accuracy": round(correct / len(exact_matches), 4),
+            "correct":  correct,
+            "total":    len(exact_matches),
+        }
+
     if bert:
         summary["bert_score"] = {
             "precision": aggregate(bert["precision"]),
@@ -466,38 +595,43 @@ def main():
             "f1":        aggregate(bert["f1"]),
         }
 
-    # --- Build per-sample records ---
+    # --- Per-sample records ---
     records = []
-    for i, (instr, ref, pred) in enumerate(zip(all_instructions, all_references, all_predictions)):
+    for i, (q, ref, pred) in enumerate(zip(all_questions, all_references, all_predictions)):
         record = {
-            "instruction": instr,
-            "reference":   ref,
-            "prediction":  pred,
-            "rouge1_f1":   rouge["rouge1"][i]["f1"],
-            "rouge2_f1":   rouge["rouge2"][i]["f1"],
-            "rougeL_f1":   rouge["rougeL"][i]["f1"],
-            "pred_words":  len(pred.split()),
-            "ref_words":   len(ref.split()),
+            "question":  q,
+            "reference": ref,
+            "prediction": pred,
+            "rouge1_f1": rouge["rouge1"][i]["f1"],
+            "rouge2_f1": rouge["rouge2"][i]["f1"],
+            "rougeL_f1": rouge["rougeL"][i]["f1"],
+            "pred_words": len(pred.split()),
+            "ref_words":  len(ref.split()),
         }
+        if exact_matches is not None:
+            record["exact_match"] = exact_matches[i]
+            record["extracted_answer"] = extract_final_answer(pred)
         if bert:
             record["bert_precision"] = bert["precision"][i]
             record["bert_recall"]    = bert["recall"][i]
             record["bert_f1"]        = bert["f1"][i]
         records.append(record)
 
-    # --- Write JSON ---
+    # --- Write outputs ---
     json_path = f"results/benchmark_{args.tag}.json"
     with open(json_path, "w") as f:
         json.dump({"summary": summary, "records": records}, f, indent=2)
 
-    # --- Write Markdown ---
     md_path = f"results/benchmark_{args.tag}.md"
     write_markdown_report(summary, md_path)
 
-    # --- Print to terminal ---
+    # --- Terminal summary ---
     print(f"\n{'='*55}")
-    print(f"Tag:        {args.tag}")
+    print(f"Tag:        {args.tag}  |  Dataset: {args.dataset}")
     print(f"Samples:    {len(samples)} in {total_elapsed:.0f}s ({len(samples)/total_elapsed:.1f}/s)")
+    if exact_matches is not None:
+        print(f"Exact Match:{summary['exact_match']['correct']}/{summary['exact_match']['total']} "
+              f"= {summary['exact_match']['accuracy']:.1%}  ← PRIMARY METRIC")
     print(f"ROUGE-1 F1: mean={summary['rouge1']['f1']['mean']}  p50={summary['rouge1']['f1']['p50']}")
     print(f"ROUGE-2 F1: mean={summary['rouge2']['f1']['mean']}  p50={summary['rouge2']['f1']['p50']}")
     print(f"ROUGE-L F1: mean={summary['rougeL']['f1']['mean']}  p50={summary['rougeL']['f1']['p50']}")
