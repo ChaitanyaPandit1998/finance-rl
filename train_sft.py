@@ -22,11 +22,13 @@ Usage:
     python train_sft.py --rank 32 --epochs 2 --batch-size 4
 """
 import argparse
+import os
 import sys
 import warnings
 from pathlib import Path
 
 warnings.filterwarnings("ignore", message=".*use_return_dict.*")
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 try:
     from dotenv import load_dotenv
@@ -231,7 +233,9 @@ class SamplePreviewCallback(TrainerCallback):
         print(f"\n{'─'*60}\n")
 
     def on_step_end(self, args, state, control, model=None, **kwargs):
-        if self.probe_examples and model is not None and state.global_step % self.every_steps == 0:
+        if (self.probe_examples and model is not None
+                and state.global_step > 0
+                and state.global_step % self.every_steps == 0):
             self._run_previews(model, f"step {state.global_step}")
 
     def on_epoch_end(self, args, state, control, model=None, **kwargs):
