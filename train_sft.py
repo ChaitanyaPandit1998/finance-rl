@@ -206,7 +206,7 @@ class SamplePreviewCallback(TrainerCallback):
             with torch.no_grad():
                 output = model.generate(
                     **inputs,
-                    max_new_tokens=512,
+                    max_new_tokens=256,
                     do_sample=False,
                     pad_token_id=self.tokenizer.eos_token_id,
                 )
@@ -227,6 +227,7 @@ class SamplePreviewCallback(TrainerCallback):
 
         self.tokenizer.padding_side = "right"
         model.train()
+        torch.cuda.empty_cache()
         print(f"\n{'─'*60}\n")
 
     def on_step_end(self, args, state, control, model=None, **kwargs):
