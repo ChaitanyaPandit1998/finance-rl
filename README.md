@@ -122,6 +122,19 @@ for path in sorted(glob.glob('results/benchmark_*.json')):
 "
 ```
 
+### Benchmark flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--tag` | `baseline` | Label for the output file (`results/benchmark_{tag}.json`) |
+| `--checkpoint` | none | Path to a LoRA adapter (omit for zero-shot baseline) |
+| `--num-samples` | `-1` | Number of examples to evaluate (`-1` = full test split) |
+| `--batch-size` | `4` | Inference batch size |
+| `--preview-every` | `50` | Print a sample Q/A preview every N samples (`0` = disable) |
+| `--no-bertscore` | off | Skip BERTScore to save ~2 GB VRAM and time |
+| `--use-qlora` | off | Load model in 4-bit (for GPUs < 24 GB) |
+| `--seed` | `42` | Random seed for sample selection |
+
 See [RUNBOOK.md](RUNBOOK.md) for the full setup guide including multi-GPU usage, QLoRA fallback, and smoke test commands.
 
 ---
