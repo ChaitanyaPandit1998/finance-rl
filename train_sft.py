@@ -23,7 +23,10 @@ Usage:
 """
 import argparse
 import sys
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings("ignore", message=".*use_return_dict.*")
 
 try:
     from dotenv import load_dotenv
