@@ -135,6 +135,20 @@ for path in sorted(glob.glob('results/benchmark_*.json')):
 | `--use-qlora` | off | Load model in 4-bit (for GPUs < 24 GB) |
 | `--seed` | `42` | Random seed for sample selection |
 
+### SFT flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--finqa-samples` | `-1` | FinQA examples to mix in (`-1` = all ~6k, `0` = skip FinQA) |
+| `--preview-samples` | `5` | FinQA test examples to preview after each epoch (`0` = disable) |
+| `--rank` | `16` | LoRA rank (`32` for higher quality, uses more VRAM) |
+| `--epochs` | `1` | Training epochs |
+| `--batch-size` | `2` | Per-device batch size |
+| `--grad-accum` | `4` | Gradient accumulation steps |
+| `--lr` | `2e-4` | Learning rate |
+| `--max-steps` | off | Override epochs with a fixed step count |
+| `--use-qlora` | off | 4-bit QLoRA for GPUs < 24 GB |
+
 See [RUNBOOK.md](RUNBOOK.md) for the full setup guide including multi-GPU usage, QLoRA fallback, and smoke test commands.
 
 ---
