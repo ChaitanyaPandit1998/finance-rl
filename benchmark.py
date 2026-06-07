@@ -92,21 +92,21 @@ def strip_thinking(text: str) -> str:
 
 
 def extract_final_answer(text: str) -> str | None:
-    """Extract a numerical answer from model output.
+    """Extract the answer from model output.
 
-    Looks for Fin-R1's <answer>X</answer> tag format first, then falls back
-    to the last number in the text for outputs that don't use the structured
-    format (e.g. baseline zero-shot responses).
+    Looks for Fin-R1's <answer>X</answer> tag and captures any content —
+    numbers, 'yes', 'no', or any text. Falls back to the last number in
+    the text for zero-shot responses that don't use the structured format.
 
     Args:
         text: Model completion with thinking stripped.
 
     Returns:
-        Numeric string with commas and % stripped, or None if not found.
+        Extracted answer string, or None if nothing found.
     """
-    match = re.search(r"<answer>\s*(-?[\d,]+\.?\d*%?)\s*</answer>", text)
+    match = re.search(r"<answer>\s*(.+?)\s*</answer>", text, re.IGNORECASE | re.DOTALL)
     if match:
-        return match.group(1).replace(",", "").replace("%", "")
+        return match.group(1).strip()
     numbers = re.findall(r"-?[\d,]+\.?\d*", text)
     return numbers[-1].replace(",", "") if numbers else None
 
@@ -313,10 +313,17 @@ def compute_exact_match(predictions: list[str], references: list[str]) -> list[b
         if pred_str is None:
             results.append(False)
             continue
+        # yes/no questions: case-insensitive string match
+        if ref_str.lower() in ("yes", "no"):
+            results.append(pred_str.lower().strip() == ref_str.lower())
+            continue
+        # Numerical questions
+        ref_clean = ref_str.replace(",", "").replace("%", "")
+        pred_clean = pred_str.replace(",", "").replace("%", "")
         try:
-            results.append(_scale_match(float(pred_str), float(ref_str)))
+            results.append(_scale_match(float(pred_clean), float(ref_clean)))
         except ValueError:
-            results.append(pred_str.strip() == ref_str)
+            results.append(pred_clean.strip() == ref_clean.strip())
     return results
 
 

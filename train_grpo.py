@@ -116,21 +116,21 @@ def format_finqa_prompt(example: dict, tokenizer) -> str:
 
 
 def extract_final_answer(text: str) -> str | None:
-    """Extract the numerical answer from a completion.
+    """Extract the answer from a completion.
 
-    Looks for Fin-R1's <answer>X</answer> tag format, matching how the
-    model is trained during SFT. Falls back to the last number in the text
-    so partially-formatted completions still receive some credit.
+    Captures any content from <answer>...</answer> tags — numbers, 'yes',
+    'no', or any text — matching how the model is trained during SFT.
+    Falls back to the last number in the text for partially-formatted outputs.
 
     Args:
         text: Raw model completion string.
 
     Returns:
-        Extracted number as a string (commas and % stripped), or None if not found.
+        Extracted answer string, or None if not found.
     """
-    match = re.search(r"<answer>\s*(-?[\d,]+\.?\d*%?)\s*</answer>", text)
+    match = re.search(r"<answer>\s*(.+?)\s*</answer>", text, re.IGNORECASE | re.DOTALL)
     if match:
-        return match.group(1).replace(",", "").replace("%", "")
+        return match.group(1).strip()
     numbers = re.findall(r"-?[\d,]+\.?\d*", text)
     return numbers[-1].replace(",", "") if numbers else None
 
