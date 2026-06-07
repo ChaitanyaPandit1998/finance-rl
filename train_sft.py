@@ -310,9 +310,6 @@ def main():
         logging_steps=10,
         save_strategy="epoch",
         save_total_limit=2,
-        max_seq_length=args.max_seq_len,
-        dataset_text_field="text",
-        packing=True,
         report_to="none",
         seed=42,
     )
@@ -327,6 +324,9 @@ def main():
         tokenizer=tokenizer,
         train_dataset=dataset,
         args=training_args,
+        max_seq_length=args.max_seq_len,
+        dataset_text_field="text",
+        packing=True,
         callbacks=callbacks or None,
     )
 
