@@ -182,19 +182,17 @@ def _build_inference_prompt(example: dict, tokenizer) -> str:
 
 
 class SamplePreviewCallback(TrainerCallback):
-    """Runs inference on a small probe set at the end of each epoch and prints previews."""
+    """Runs inference on a small probe set every N steps and prints previews."""
 
-    def __init__(self, probe_examples: list, tokenizer, device):
+    def __init__(self, probe_examples: list, tokenizer, device, every_steps: int):
         self.probe_examples = probe_examples
         self.tokenizer = tokenizer
         self.device = device
+        self.every_steps = every_steps
 
-    def on_epoch_end(self, args, state, control, model=None, **kwargs):
-        if not self.probe_examples or model is None:
-            return
-
+    def _run_previews(self, model, step_label: str):
         print(f"\n{'─'*60}")
-        print(f"  Sample previews — end of epoch {int(state.epoch)}")
+        print(f"  Sample previews — {step_label}")
         print(f"{'─'*60}")
 
         self.tokenizer.padding_side = "left"
@@ -231,6 +229,14 @@ class SamplePreviewCallback(TrainerCallback):
         model.train()
         print(f"\n{'─'*60}\n")
 
+    def on_step_end(self, args, state, control, model=None, **kwargs):
+        if self.probe_examples and model is not None and state.global_step % self.every_steps == 0:
+            self._run_previews(model, f"step {state.global_step}")
+
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        if self.probe_examples and model is not None:
+            self._run_previews(model, f"end of epoch {int(state.epoch)}")
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -247,7 +253,9 @@ def main():
     parser.add_argument("--finqa-samples", type=int, default=-1,
                         help="FinQA examples to add to SFT (-1 = all ~6k, 0 = skip FinQA)")
     parser.add_argument("--preview-samples", type=int, default=5,
-                        help="FinQA test examples to preview after each epoch (0 = disable)")
+                        help="FinQA test examples to preview during training (0 = disable)")
+    parser.add_argument("--preview-every-steps", type=int, default=1000,
+                        help="Print previews every N steps (also always prints at epoch end)")
     args = parser.parse_args()
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -320,7 +328,7 @@ def main():
     callbacks = []
     if probe_examples:
         device = next(model.parameters()).device
-        callbacks.append(SamplePreviewCallback(probe_examples, tokenizer, device))
+        callbacks.append(SamplePreviewCallback(probe_examples, tokenizer, device, args.preview_every_steps))
 
     trainer = SFTTrainer(
         model=model,
