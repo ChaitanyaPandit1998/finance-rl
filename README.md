@@ -95,8 +95,7 @@ cp .env.example .env   # then fill in HF_TOKEN, HF_HOME, CHECKPOINT_DIR
 
 # Install dependencies (see RUNBOOK.md for full GPU setup)
 pip install python-dotenv                                              # install first so scripts can load .env
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
-pip install unsloth bitsandbytes
+pip install unsloth bitsandbytes                                       # unsloth installs torch automatically
 pip install -r requirements.txt
 
 # 1. Baseline benchmark

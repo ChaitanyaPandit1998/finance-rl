@@ -46,16 +46,13 @@ cp .env.example .env
 # 4. Install python-dotenv first so scripts can load .env immediately
 pip install python-dotenv
 
-# 5. PyTorch with CUDA (match your driver — check with: nvcc --version)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
-
-# 6. Unsloth (efficient LoRA training)
+# 5. Unsloth (efficient LoRA training — installs torch automatically)
 pip install unsloth
 
-# 7. bitsandbytes (only needed for --use-qlora)
+# 6. bitsandbytes (only needed for --use-qlora)
 pip install bitsandbytes
 
-# 8. Remaining project dependencies
+# 7. Remaining project dependencies
 pip install -r requirements.txt
 ```
 
