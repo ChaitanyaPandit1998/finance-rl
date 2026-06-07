@@ -2,7 +2,24 @@
 Shared utilities for the finance-rl pipeline.
 """
 import json
+import re
 from pathlib import Path
+
+
+def strip_thinking(text: str) -> str:
+    """Remove Qwen3 <think>...</think> blocks from generated output."""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<think>.*", "", text, flags=re.DOTALL)
+    return text.strip()
+
+
+def extract_final_answer(text: str) -> str | None:
+    """Extract answer from <answer>X</answer> tag, or fall back to last number."""
+    match = re.search(r"<answer>\s*(.+?)\s*</answer>", text, re.IGNORECASE | re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    numbers = re.findall(r"-?[\d,]+\.?\d*", text)
+    return numbers[-1].replace(",", "") if numbers else None
 
 
 FINQA_URLS = {

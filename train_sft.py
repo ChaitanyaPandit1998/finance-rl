@@ -39,10 +39,13 @@ CHECKPOINT_DIR: str = os.getenv("CHECKPOINT_DIR", "checkpoints")
 try:
     import torch
     from datasets import Dataset, concatenate_datasets, load_dataset
+    from transformers import TrainerCallback
     from trl import SFTConfig, SFTTrainer
 except ImportError as e:
     if "--help" not in sys.argv and "-h" not in sys.argv:
         raise
+
+from utils import extract_final_answer, strip_thinking
 
 BASE_MODEL = "Qwen/Qwen3-8B"
 SYSTEM_PROMPT = "You are a helpful financial assistant. Answer concisely and accurately."
@@ -150,6 +153,81 @@ def build_combined_dataset(alpaca_raw, finqa_raw, tokenizer) -> Dataset:
     return combined.shuffle(seed=42)
 
 
+def _build_inference_prompt(example: dict, tokenizer) -> str:
+    """Build an inference-only prompt for a FinQA example (no assistant turn)."""
+    pre = " ".join(example.get("pre_text") or [])
+    post = " ".join(example.get("post_text") or [])
+    table = example.get("table") or []
+    if isinstance(table, list) and table:
+        table_str = "\n".join(" | ".join(str(cell) for cell in row) for row in table)
+    else:
+        table_str = str(table) if table else ""
+    context = "\n\n".join(p for p in [pre, table_str, post] if p.strip())
+    user_content = (
+        f"/no_think\n"
+        f"Financial Context:\n{context}\n\n"
+        f"Question: {example['question']}\n\n"
+        f"Provide step-by-step reasoning, then wrap your final numerical answer "
+        f"in <answer></answer> tags. Example: <answer>42.5</answer>"
+    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+
+class SamplePreviewCallback(TrainerCallback):
+    """Runs inference on a small probe set at the end of each epoch and prints previews."""
+
+    def __init__(self, probe_examples: list, tokenizer, device):
+        self.probe_examples = probe_examples
+        self.tokenizer = tokenizer
+        self.device = device
+
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        if not self.probe_examples or model is None:
+            return
+
+        print(f"\n{'─'*60}")
+        print(f"  Sample previews — end of epoch {int(state.epoch)}")
+        print(f"{'─'*60}")
+
+        self.tokenizer.padding_side = "left"
+        model.eval()
+
+        for i, ex in enumerate(self.probe_examples):
+            prompt = _build_inference_prompt(ex, self.tokenizer)
+            inputs = self.tokenizer(
+                prompt, return_tensors="pt", truncation=True, max_length=2048
+            ).to(self.device)
+            with torch.no_grad():
+                output = model.generate(
+                    **inputs,
+                    max_new_tokens=512,
+                    do_sample=False,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                )
+            new_tokens = output[:, inputs["input_ids"].shape[1]:]
+            pred = strip_thinking(self.tokenizer.decode(new_tokens[0], skip_special_tokens=True))
+            extracted = extract_final_answer(pred)
+            ref = str(ex["answer"])
+            q = ex["question"]
+
+            print(f"\n  [{i+1}/{len(self.probe_examples)}] Q: {q[:100]}{'...' if len(q) > 100 else ''}")
+            print(f"  Ref:       {ref}")
+            print(f"  Extracted: {extracted or '(none)'}")
+            if len(pred) > 250:
+                print(f"  Ans start: {pred[:125]}...")
+                print(f"  Ans end:   ...{pred[-125:]}")
+            else:
+                print(f"  Ans:       {pred}")
+
+        self.tokenizer.padding_side = "right"
+        model.train()
+        print(f"\n{'─'*60}\n")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--use-qlora", action="store_true", help="4-bit QLoRA (for GPUs with < 24GB VRAM)")
@@ -164,6 +242,8 @@ def main():
     parser.add_argument("--max-steps", type=int, default=-1, help="Override epochs with fixed step count")
     parser.add_argument("--finqa-samples", type=int, default=-1,
                         help="FinQA examples to add to SFT (-1 = all ~6k, 0 = skip FinQA)")
+    parser.add_argument("--preview-samples", type=int, default=5,
+                        help="FinQA test examples to preview after each epoch (0 = disable)")
     args = parser.parse_args()
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -208,6 +288,13 @@ def main():
     print(f"Combined dataset: {len(dataset)} examples "
           f"({len(alpaca_raw)} Alpaca + {len(finqa_raw) if finqa_raw else 0} FinQA)")
 
+    probe_examples = []
+    if args.preview_samples > 0:
+        from utils import load_finqa
+        probe_raw = load_finqa(split="test", cache_dir=HF_CACHE)
+        probe_examples = [probe_raw[i] for i in range(min(args.preview_samples, len(probe_raw)))]
+        print(f"Loaded {len(probe_examples)} FinQA test examples for epoch-end previews")
+
     training_args = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.epochs,
@@ -229,11 +316,17 @@ def main():
         seed=42,
     )
 
+    callbacks = []
+    if probe_examples:
+        device = next(model.parameters()).device
+        callbacks.append(SamplePreviewCallback(probe_examples, tokenizer, device))
+
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
         train_dataset=dataset,
         args=training_args,
+        callbacks=callbacks or None,
     )
 
     print(f"\nStarting SFT training...")

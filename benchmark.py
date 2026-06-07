@@ -35,7 +35,6 @@ Usage:
 import argparse
 import json
 import os
-import re
 import random
 import sys
 import time
@@ -65,50 +64,7 @@ SYSTEM_PROMPT = "You are a helpful financial assistant. Answer concisely and acc
 
 # ── Text utilities ─────────────────────────────────────────────────────────────
 
-def strip_thinking(text: str) -> str:
-    """Remove Qwen3 <think>...</think> blocks from generated output.
-
-    Qwen3's thinking tokens are plain text, not special tokens, so
-    skip_special_tokens=True does not remove them. Leaving them in inflates
-    response length and contaminates ROUGE/BERTScore with reasoning chains
-    that have nothing to do with the final answer.
-
-    Handles two cases:
-    - Complete blocks: <think>...</think> — both tags present, strip contents
-    - Truncated blocks: <think>... with no closing tag — max_new_tokens cut the
-      generation mid-thought; strip everything from <think> to end of string
-
-    Args:
-        text: Raw decoded model output.
-
-    Returns:
-        Text with all thinking content removed and whitespace stripped.
-    """
-    # Complete blocks first
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    # Truncated blocks — <think> opened but </think> never arrived
-    text = re.sub(r"<think>.*", "", text, flags=re.DOTALL)
-    return text.strip()
-
-
-def extract_final_answer(text: str) -> str | None:
-    """Extract the answer from model output.
-
-    Looks for Fin-R1's <answer>X</answer> tag and captures any content —
-    numbers, 'yes', 'no', or any text. Falls back to the last number in
-    the text for zero-shot responses that don't use the structured format.
-
-    Args:
-        text: Model completion with thinking stripped.
-
-    Returns:
-        Extracted answer string, or None if nothing found.
-    """
-    match = re.search(r"<answer>\s*(.+?)\s*</answer>", text, re.IGNORECASE | re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    numbers = re.findall(r"-?[\d,]+\.?\d*", text)
-    return numbers[-1].replace(",", "") if numbers else None
+from utils import strip_thinking, extract_final_answer  # noqa: E402
 
 
 # ── Prompt formatting ──────────────────────────────────────────────────────────
