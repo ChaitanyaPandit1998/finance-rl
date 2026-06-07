@@ -37,6 +37,7 @@ HF_CACHE: str | None = os.getenv("HF_HOME")
 CHECKPOINT_DIR: str = os.getenv("CHECKPOINT_DIR", "checkpoints")
 
 try:
+    import unsloth  # must be first — patches transformers/trl/peft before they load
     import torch
     from datasets import Dataset, concatenate_datasets, load_dataset
     from transformers import TrainerCallback
