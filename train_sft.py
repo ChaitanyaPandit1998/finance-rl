@@ -304,7 +304,7 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.05,
+        warmup_steps=100,
         bf16=not args.use_qlora,
         fp16=False,
         logging_steps=10,
